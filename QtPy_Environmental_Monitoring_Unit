@@ -1,0 +1,493 @@
+#include <U8g2lib.h>
+#include <TinyGPS++.h>
+
+#include <BMx280I2C.h>
+
+#include <SPI.h>
+#include <SD.h>
+
+Sd2Card card;
+SdVolume volume;
+SdFile root;
+File dataFile;
+
+const int chipSelect = 0; //here I'm using pin 0 for the sd card data line
+
+#define I2C_ADDRESS 0x76
+
+//create a BMx280I2C object using the I2C interface with I2C Address 0x76
+BMx280I2C bmx280(I2C_ADDRESS);
+
+//the line below specific to the OLED being used.  Replace F with 1 or 2 to reduce buffer size
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R3, /* reset=*/ U8X8_PIN_NONE);
+
+static const uint32_t GPSBaud = 9600;
+TinyGPSPlus gps;
+int gpschar; 
+
+unsigned long previousMillis = 0;//rotate title
+const long interval = 15000;    
+//long previouslogMillis = -900000;//update sensor log straight away
+//const long loginterval = 900000; //12 hour logging
+long previouslogMillis = -450000;
+const long loginterval = 450000; //6 hour logging
+//long previouslogMillis = -30000;
+//const long loginterval = 30000; //12 minutes logging
+long previousflogMillis = 0;
+const long floginterval = 1000; //22 seconds logging
+
+long previoussensorMillis = -1000;
+const long sensorinterval = 900; //1 second per reading
+
+float temperaturelog[24];
+float pressurelog[24];
+float humiditylog[24];
+float ftemperaturelog[21];
+float fpressurelog[21];
+float fhumiditylog[21];
+
+char date_string[32];
+char file_date_string[32];
+char time_string[32];
+
+double lat_val, lng_val, alt_m_val; 
+uint16_t yr_val;
+uint8_t hr_val, min_val, sec_val, sats_val, mnt_val, day_val;
+bool loc_valid, alt_valid, time_valid, sats_valid;
+
+void setup() {
+  // put your setup code here, to run once:
+
+Serial.begin(GPSBaud); //uncomment to debug
+Serial1.begin(GPSBaud); //Don't comment this out - it connects the gps data to the QtPy
+  
+u8g2.begin();  
+
+//Clear Screen
+ u8g2.firstPage();
+ do {
+
+ } while ( u8g2.nextPage() );
+
+ u8g2.setDrawColor(1);
+ 
+ 
+ Wire.begin();
+
+ if (!bmx280.begin())
+ {
+    Serial.println("begin() failed. check your BMx280 Interface and I2C Address.");
+    while (1);
+  }
+
+  if (bmx280.isBME280())
+    Serial.println("sensor is a BME280");
+  else
+    Serial.println("sensor is a BMP280");
+
+
+ bmx280.resetToDefaults();
+
+ bmx280.writeOversamplingPressure(BMx280MI::OSRS_P_x16);
+ bmx280.writeOversamplingTemperature(BMx280MI::OSRS_T_x16);
+ //if sensor is a BME280, set an oversampling setting for humidity measurements.
+ if (bmx280.isBME280())
+    bmx280.writeOversamplingHumidity(BMx280MI::OSRS_H_x16);
+
+//populate array with dummy data
+  for (int l=0; l<24; l++){
+    temperaturelog[l] = 27;
+    pressurelog[l] = 975;
+    humiditylog[l] = 50;
+    }
+  for (int m=0; m<21; m++){
+    ftemperaturelog[m] = 27;
+    fpressurelog[m] = 975;
+    fhumiditylog[m] = 50;
+    }
+
+  Serial.print("Initializing SD card..."); //for the debug
+  if (!SD.begin(0)) {
+      Serial.println("initialization failed!");
+      while (1);
+    }
+  Serial.println("initialization done.");
+  
+}
+
+void loop() {
+  // put your main code here, to run repeatedly
+    while (Serial1.available()>0)  /* Encode data read from GPS while data is available on serial port */
+     {  gpschar = Serial1.read(); //read raw gps data to gpschar
+        //Serial.write(gpschar);  // uncomment to send raw gps over Serial to debug
+        gps.encode(gpschar);      // extract useful info from raw gps data
+      }
+
+ u8g2.setFont(u8g2_font_u8glib_4_tr);
+ u8g2.drawFrame(0,0,64,128);
+ u8g2.drawLine(0,14,64,14);
+
+     
+     lat_val = gps.location.lat();  /* Get latitude data */
+     loc_valid = gps.location.isValid(); /* Check if valid location data is available */
+     lng_val = gps.location.lng(); /* Get longtitude data */
+     alt_m_val = gps.altitude.meters();  /* Get altitude data in meters */
+     alt_valid = gps.altitude.isValid(); /* Check if valid altitude data is available */
+     hr_val = gps.time.hour(); /* Get hour */
+     min_val = gps.time.minute();  /* Get minutes */
+     sec_val = gps.time.second();  /* Get seconds */
+     time_valid = gps.time.isValid();  /* Check if valid time data is available */
+     sats_valid = gps.satellites.isValid();
+     sats_val = gps.satellites.value();
+     yr_val = gps.date.year();
+     mnt_val = gps.date.month();
+     day_val = gps.date.day();
+
+ unsigned long currentMillis = millis();
+
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
+  }
+   if (!time_valid)
+        {
+          u8g2.drawStr(3, 125, "********");
+         
+        }
+        else
+        {
+          
+          
+          sprintf(time_string, "UTC: %02d:%02d:%02d", hr_val, min_val, sec_val);
+          sprintf(date_string, "UTC: %02d-%02d-%02d", yr_val, mnt_val, day_val);
+          sprintf(file_date_string, "%02d%02d%02d.txt", yr_val, mnt_val, day_val);
+        }
+  if (currentMillis - previousMillis >= interval/2){
+    u8g2.setDrawColor(0);
+    u8g2.drawBox(2,2,61,12);
+    u8g2.drawBox(2,121,61,5);
+    u8g2.setDrawColor(1);
+    
+    u8g2.drawStr(8, 6, "Environmental");
+    u8g2.drawStr(5, 12, "Monitoring Unit");
+
+    u8g2.setCursor(5, 125);
+    u8g2.print(date_string);
+          
+  } else {
+    u8g2.setDrawColor(0);
+    u8g2.drawBox(2,2,61,12);
+    u8g2.drawBox(2,121,61,5);
+    u8g2.setDrawColor(1);
+    u8g2.drawStr(6, 6, "OKUBO HEAVY");
+    u8g2.drawStr(10, 12, "INDUSTRIES"); 
+
+    u8g2.setCursor(10, 125);
+    u8g2.print(time_string);
+  }
+
+u8g2.drawStr(3, 22, "Temp");
+u8g2.drawStr(3, 56, "Pressure");
+u8g2.drawStr(3, 92, "Humidity");
+
+unsigned long currentsensorMillis = millis();
+
+if (currentsensorMillis - previoussensorMillis >= sensorinterval) {
+   
+
+  //start a measurement
+  if (!bmx280.measure())
+  {
+    Serial.println("could not start measurement, is a measurement already running?");
+    return;
+  }
+do
+  {
+    delay(100);
+  } while (!bmx280.hasValue());
+  
+
+    u8g2.setCursor(36, 22);
+    u8g2.print(bmx280.getTemperature(),1);
+    u8g2.setCursor(36, 56);
+    u8g2.print((bmx280.getPressure())/100,1);
+    u8g2.setCursor(36, 92);
+    u8g2.print(bmx280.getHumidity(),1);
+
+    Serial.print(bmx280.getPressure(),1);
+    Serial.print(", ");
+    Serial.print(bmx280.getTemperature(),1);
+    Serial.print(", ");
+    Serial.print(bmx280.getHumidity(),1);
+    Serial.print(", ");
+    Serial.print(date_string);
+    Serial.print(", ");
+    Serial.print(time_string);
+    Serial.print("\n");
+
+    if (SD.exists(file_date_string)) { //check file exists
+            
+    dataFile = SD.open(file_date_string, FILE_WRITE); //open file on SD card
+          dataFile.print(date_string);  //write comma delimited data to SD card file
+          dataFile.print(",");
+          dataFile.print(time_string);  
+          dataFile.print(",");
+          dataFile.print(lat_val, 6);
+          dataFile.print(",");
+          dataFile.print(lng_val, 6);
+          dataFile.print(",");
+          dataFile.print(alt_m_val, 2);
+          dataFile.print(",");
+          dataFile.print(bmx280.getTemperature(),1);
+          dataFile.print(",");
+          dataFile.print(bmx280.getPressure(),0);
+          dataFile.print(",");
+          dataFile.print(bmx280.getHumidity(),1);
+          dataFile.print("\n");
+          dataFile.close(); //close SD card file
+          } else {
+            dataFile = SD.open(file_date_string, FILE_WRITE); //create new file
+            dataFile.print("Date,Time,Latitude,Longitude,Altitude,Temperature,Pressure,Humidity\n"); //write file header
+            dataFile.close(); //close SD card file
+          }
+    if (currentsensorMillis - previoussensorMillis >= sensorinterval/2){
+    
+      u8g2.drawDisc(6,36,1);
+      u8g2.drawDisc(6,70,1);
+      u8g2.drawDisc(6,106,1);
+      u8g2.sendBuffer();
+      
+      } 
+
+    
+     previoussensorMillis = currentsensorMillis;
+    
+  }
+
+    u8g2.setDrawColor(0); //clear temp graph space
+    u8g2.drawBox(14,24,48,24);
+    u8g2.drawDisc(6,36,1);
+    u8g2.drawDisc(6,70,1);
+    u8g2.drawDisc(6,106,1);
+    
+    u8g2.setDrawColor(1);
+    
+    u8g2.drawLine(13, 26,13,48); //draw temp axis
+    u8g2.drawLine(40, 26,40,48);
+    u8g2.drawLine(13, 48,37,48);
+    u8g2.drawLine(41, 48,61,48);
+    
+    
+    u8g2.setDrawColor(0); //clear pressure graph space
+    u8g2.drawBox(14,58,48,24);
+    u8g2.setDrawColor(1);
+    
+    u8g2.drawLine(13, 60,13,82); //draw pressure axis
+    u8g2.drawLine(40, 60,40,82);
+    u8g2.drawLine(13, 82,37,82);
+    u8g2.drawLine(41, 82,61,82);
+    
+    
+    u8g2.setDrawColor(0); //clear humidity graph space
+    u8g2.drawBox(14,94,48,24);
+    u8g2.setDrawColor(1);
+    
+    u8g2.drawLine(13, 96,13,118); //draw humidity axis
+    u8g2.drawLine(40, 96,40,118);
+    u8g2.drawLine(13, 118,37,118);
+    u8g2.drawLine(41, 118,61,118);
+    
+    unsigned long currentlogMillis = millis();
+
+    if (currentlogMillis - previouslogMillis >= loginterval) {
+    
+    for (int i=1; i<24; i++){ //move data down the array
+      
+      temperaturelog[i-1] = temperaturelog[i];
+      pressurelog[i-1] = pressurelog[i];
+      humiditylog[i-1] = humiditylog[i]; 
+      
+      }
+
+    temperaturelog[23] = (bmx280.getTemperature()); //add new data to end of array
+    pressurelog[23] = ((bmx280.getPressure64())/100);
+    humiditylog[23] = (bmx280.getHumidity());
+  
+    previouslogMillis = currentlogMillis;
+    }  
+
+    unsigned long currentflogMillis = millis();
+    if (currentflogMillis - previousflogMillis >= floginterval) {
+    
+    for (int h=1; h<21; h++){  //fast graph data
+      
+      ftemperaturelog[h-1] = ftemperaturelog[h];
+      fpressurelog[h-1] = fpressurelog[h];
+      fhumiditylog[h-1] = fhumiditylog[h]; 
+      
+      }
+
+    ftemperaturelog[20] = (bmx280.getTemperature()); //add new fast graph data
+    fpressurelog[20] = ((bmx280.getPressure64())/100);
+    fhumiditylog[20] = (bmx280.getHumidity());
+  
+    previousflogMillis = currentflogMillis;
+    }  
+
+    float tempmin = 100; //set min and max temp
+    float tempmax = 1;
+
+    float pressuremin = 1200; //set min and max pressure
+    float pressuremax = 800;
+
+    float humiditymin = 100; //set min and max humidity
+    float humiditymax = 1;
+    
+    //check min and max data
+    for (int j=0; j<24; j++){
+      if (temperaturelog[j] < tempmin) 
+      {
+        tempmin = temperaturelog[j];
+      }
+      if (temperaturelog[j] > tempmax) 
+      {
+        tempmax = temperaturelog[j];
+      }
+
+      if (pressurelog[j] < pressuremin) 
+      {
+        pressuremin = pressurelog[j];
+      }
+      if (pressurelog[j] > pressuremax) 
+      {
+        pressuremax = pressurelog[j];
+      }
+      
+      if (humiditylog[j] < humiditymin) 
+      {
+        humiditymin = humiditylog[j];
+      }
+      if (humiditylog[j] > humiditymax) 
+      {
+        humiditymax = humiditylog[j];
+      }
+    }
+
+    for (int k=0; k<21; k++){
+      if (ftemperaturelog[k] < tempmin) 
+      {
+        tempmin = ftemperaturelog[k];
+      }
+      if (ftemperaturelog[k] > tempmax) 
+      {
+        tempmax = ftemperaturelog[k];
+      }
+
+      if (fpressurelog[k] < pressuremin) 
+      {
+        pressuremin = fpressurelog[k];
+      }
+      if (fpressurelog[k] > pressuremax) 
+      {
+        pressuremax = fpressurelog[k];
+      }
+      
+      if (fhumiditylog[k] < humiditymin) 
+      {
+        humiditymin = fhumiditylog[k];
+      }
+      if (fhumiditylog[k] > humiditymax) 
+      {
+        humiditymax = fhumiditylog[k];
+      }
+    }
+    
+  float temprange;
+  float humidityrange;
+  float pressurerange;
+  
+  //ensure range is at least 1
+  if  (tempmax - tempmin > 1){
+    temprange = (tempmax - tempmin);
+  } else temprange = 1;
+
+  if  (pressuremax - pressuremin > 1){
+    pressurerange = (pressuremax - pressuremin);
+  } else pressurerange = 1;
+  
+  if  (humiditymax - humiditymin > 1){
+    humidityrange = (humiditymax - humiditymin);
+  } else humidityrange = 1;
+  
+  //set pixels per unit for graph 21 pixel y axis
+  float temppixels = (21/temprange);
+  float pressurepixels = (21/pressurerange);
+  float humiditypixels = (21/humidityrange);
+
+  //calculate y pixel location for two points to draw graph line
+  for (int p=0; p<22; p++){
+    float ytemp = ((temperaturelog[p]-tempmin)*temppixels);
+    float ytemp2 = ((temperaturelog[p+1]-tempmin)*temppixels);
+    int y = (47 - ytemp);
+    int y2 = (47 - ytemp2);
+    
+    //draw line
+    u8g2.drawLine(p+14, y, p+15, y2);
+    u8g2.setCursor(3, 50); //draw labels
+    u8g2.print(tempmin, 0);
+    u8g2.setCursor(3, 28);
+    if  (tempmax - tempmin > 1){
+      u8g2.print(tempmax, 0);
+      } else u8g2.print(tempmin+1, 0);
+    
+    float ypressure = ((pressurelog[p]-pressuremin)*pressurepixels);
+    float ypressure2 = ((pressurelog[p+1]-pressuremin)*pressurepixels);
+    int yp = (81 - ypressure);
+    int yp2 = (81 - ypressure2);
+    u8g2.drawLine(p+14, yp, p+15, yp2);
+    u8g2.setCursor(3, 84);
+    u8g2.print(pressuremin, 0);
+    u8g2.setCursor(3, 62);
+    if  (pressuremax - pressuremin > 1){
+      u8g2.print(pressuremax, 0);
+      } else u8g2.print(pressuremin+1, 0);
+
+    float yhumidity = ((humiditylog[p]-humiditymin)*humiditypixels);
+    float yhumidity2 = ((humiditylog[p+1]-humiditymin)*humiditypixels);
+    int yh = (117 - yhumidity);
+    int yh2 = (117 - yhumidity2);
+    u8g2.drawLine(p+14, yh, p+15, yh2);
+    u8g2.setCursor(3, 120);
+    u8g2.print(humiditymin, 0);
+    u8g2.setCursor(3, 98);
+    if  (humiditymax - humiditymin > 1){
+      u8g2.print(humiditymax, 0);
+      } else u8g2.print(humiditymin+1, 0);
+  }
+
+  //calculate y pixel location for two points to draw fast graph line
+  for (int q=0; q<20; q++){
+    float fytemp = ((ftemperaturelog[q]-tempmin)*temppixels);
+    float fytemp2 = ((ftemperaturelog[q+1]-tempmin)*temppixels);
+    int fy = (47 - fytemp);
+    int fy2 = (47 - fytemp2);
+    
+    //draw line
+    u8g2.drawLine(q+41, fy, q+42, fy2);
+    
+    float fypressure = ((fpressurelog[q]-pressuremin)*pressurepixels);
+    float fypressure2 = ((fpressurelog[q+1]-pressuremin)*pressurepixels);
+    int fyp = (81 - fypressure);
+    int fyp2 = (81 - fypressure2);
+    u8g2.drawLine(q+41, fyp, q+42, fyp2);
+
+    float fyhumidity = ((fhumiditylog[q]-humiditymin)*humiditypixels);
+    float fyhumidity2 = ((fhumiditylog[q+1]-humiditymin)*humiditypixels);
+    int fyh = (117 - fyhumidity);
+    int fyh2 = (117 - fyhumidity2);
+    u8g2.drawLine(q+41, fyh, q+42, fyh2);
+    
+  }
+
+ u8g2.sendBuffer();
+
+}
